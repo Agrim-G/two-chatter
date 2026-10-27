@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Conversation ids are the two user ids joined by "_" (sorted), so the id itself says who may use it.
+    function inConversation(convId) {
+      return signedIn() && request.auth.uid in convId.split('_');
+    }
+
+    // Profiles: any signed-in user can see who is registered; you can only create or edit your own.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40;
+      allow delete: if false;
+    }
+
+    // Conversation summary (used for the sidebar list).
+    match /conversations/{convId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create, update: if inConversation(convId)
+        && convId.split('_').size() == 2
+        && request.resource.data.keys().hasOnly(['participants', 'lastMessage', 'updatedAt'])
+        && request.resource.data.participants == convId.split('_')
+        && request.resource.data.lastMessage.keys().hasOnly(['text', 'senderId'])
+        && request.resource.data.lastMessage.senderId == request.auth.uid
+        && request.resource.data.lastMessage.text is string
+        && request.resource.data.lastMessage.text.size() > 0
+        && request.resource.data.lastMessage.text.size() <= 2000
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+
+      // Messages: only the two people in the conversation can read or send, and only as themselves.
+      match /messages/{messageId} {
+        allow read: if inConversation(convId);
+        allow create: if inConversation(convId)
+          && request.resource.data.keys().hasOnly(['text', 'senderId', 'createdAt'])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
